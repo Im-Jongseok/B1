@@ -1,315 +1,388 @@
 # 시스템 관제 스크립트 자동화
 
-## mission
-권한 관리, 네트워크 보안, 로그 자동화 쉘 스크립트 개발
+![Ubuntu](https://img.shields.io/badge/Ubuntu_24.04-E95420?style=flat&logo=ubuntu&logoColor=white)
+![GCP](https://img.shields.io/badge/GCP_Compute_Engine-4285F4?style=flat&logo=googlecloud&logoColor=white)
+![Shell](https://img.shields.io/badge/Shell-4EAA25?style=flat&logo=gnubash&logoColor=white)
 
-## 기본 보안 및 네트워크 설정
+## Mission
 
-**리눅스 VM 생성 및 실행**
-    GCP Compute Engine
-    ubuntu:24.04 LTS
+GCP Compute Engine(Ubuntu 24.04) 위에 **계정/그룹/권한 관리**, **네트워크 보안(SSH·방화벽)**, **시스템 관제 자동화(모니터링·로그·cron)** 환경을 구축하고, 원커맨드 프로비저닝 쉘 스크립트를 개발한다.
 
-**SSH?**
-> Secure Shell: 암호화 기술을 사용하여 원격 컴퓨터에 안전하게 접속하고 명령을 실행하는 네트워크 프로토콜. 기본 포트(22). 
-> 기존 rsh rcp, rlogin, rexec || telnet, ftp 등 remote 서비스의 보안 강화 
+## 실습 환경
 
-ssh 설정 변경
-```bash
-    > vim /etc/ssh/sshd_config
-    Port 22 -> 20022
-    PermitRootLogin no
+| 항목 | 내용 |
+|------|------|
+| OS | Ubuntu 24.04 LTS |
+| 인프라 | GCP Compute Engine |
+| SSH 포트 | 20022 (기본 22에서 변경) |
+| 앱 포트 | 15034 |
+| 실행 바이너리 | `agent-app` |
+| 관제 스크립트 | `monitor.sh`, `report.sh` |
+| 자동 실행 | cron (매분) |
+
+## 레포지토리 구조
+
 ```
-```bash
-    sudo sed -i 's/^#\?Port .*/Port 20022/' /etc/ssh/sshd_config
-    sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
-```
-
-**UFW(Uncomplicated Firewall)**
-> 사용하기 쉽게 설계된 넷필터 방화벽을 관리하는 프로그램. 
-
-```bash
-    # 기본 정책: 들어오는 트래픽 차단
-    > sudo ufw default deny incoming
-    > sudo ufw default allow outgoing
-
-    # 허용 포트 설정
-    > sudo ufw allow 20022/tcp
-    > sudo ufw allow 15034/tcp
-
-    # 방화벽 활성화
-    > sudo ufw enable
-
-    # 확인
-    > sudo ufw status verbose
-    Status: active
-    Logging: on (low)
-    Default: deny (incoming), allow (outgoing), disabled (routed)
-    New profiles: skip
-
-    To                         Action      From
-    --                         ------      ----
-    20022/tcp                  ALLOW IN    Anywhere
-    15034/tcp                  ALLOW IN    Anywhere
-    20022/tcp (v6)             ALLOW IN    Anywhere (v6)
-    15034/tcp (v6)             ALLOW IN    Anywhere (v6)
+B1-1/
+├── setup.sh              # 원커맨드 프로비저닝 (전체 실행 진입점)
+├── common_setup.sh       # 공통 변수·함수 (require_root, 경로 상수)
+├── package_setup.sh      # 패키지 설치
+├── ssh_setup.sh          # SSH 포트 변경·Root 로그인 차단
+├── firewall_setup.sh     # UFW 방화벽 설정
+├── group_setup.sh        # 그룹 생성 (agent-common, agent-core)
+├── account_setup.sh      # 계정 생성 (agent-admin, agent-dev, agent-test)
+├── permission_setup.sh   # 디렉토리·권한 설정
+├── env_setup.sh          # 환경변수 등록 (/etc/profile.d/agent-env.sh)
+├── app_setup.sh          # 바이너리·스크립트 배포
+├── cron.sh               # cron 자동 등록
+├── monitor.sh            # 시스템 관제 스크립트
+├── report.sh             # 통계 리포트 스크립트
+├── agent-app             # 실행 바이너리
+└── B1-1.pdf              # 미션 명세서
 ```
 
-### 계정/그룹/권한 체계
+## 핵심 개념 정리
 
-1. 그룹 생성
+### SSH (Secure Shell)
+
+- 암호화 기술을 사용하여 원격 컴퓨터에 안전하게 접속하고 명령을 실행하는 네트워크 프로토콜
+- 기존 `rsh`, `telnet`, `ftp` 등 평문 전송 프로토콜의 보안 강화 대체
+- 기본 포트(22)를 비표준 포트로 변경하여 **무차별 대입 공격(Brute-force)** 감소
+- Root 직접 로그인 차단으로 **권한 상승 공격** 방지
+
+### UFW (Uncomplicated Firewall)
+
+- Linux `iptables`/`nftables`를 간편하게 관리하는 방화벽 도구
+- 기본 정책: 인바운드 차단(`deny incoming`), 아웃바운드 허용(`allow outgoing`)
+- 허용 포트만 명시적으로 개방하는 **화이트리스트** 방식
+
+### cron
+
+- 지정된 시간 간격으로 명령을 자동 실행하는 Linux 스케줄러
+- `* * * * *` (분 시 일 월 요일) 형식으로 주기 설정
+- 이 과제에서는 `monitor.sh`를 **매분** 실행하여 관제 로그 자동 수집
+
+### 로그 로테이션
+
+- 로그 파일이 무한히 커지는 것을 방지하는 관리 기법
+- `monitor.log`가 10MB 초과 시 `.1`, `.2`, ... `.10`까지 순환 보관
+- 최대 10개 파일 유지, 가장 오래된 파일은 자동 삭제
+
+### 환경변수와 `/etc/profile.d/`
+
+- `/etc/profile.d/*.sh`에 등록한 환경변수는 **모든 사용자**의 로그인 시 자동 적용
+- 개별 사용자 `~/.bashrc`와 달리 시스템 전역 설정으로, 계정 간 일관성 보장
+
+## 수행 내역
+
+### 1. 기본 보안 및 네트워크 설정
+
+#### SSH 설정 변경
+
+##### 실행 명령
+
 ```bash
-    > sudo groupadd agent-common
-    > sudo groupadd agent-core
+# 포트 변경: 22 → 20022 (기본 포트 스캔 회피)
+sudo sed -i 's/^#\?Port .*/Port 20022/' /etc/ssh/sshd_config
+
+# Root 직접 로그인 차단
+sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
+
+# sshd 재시작
+sudo systemctl restart sshd
 ```
-2. 계정 생성
-```bash
-    > useradd -D
-    GROUP=100
-    HOME=/home
-    INACTIVE=-1
-    EXPIRE=
-    SHELL=/bin/sh
-    SKEL=/etc/skel
-    CREATE_MAIL_SPOOL=no
 
-    > sudo useradd -m -s /bin/bash agent-admin
-    > sudo useradd -m -s /bin/bash agent-dev
-    > sudo useradd -m -s /bin/bash agent-test
+##### 확인 결과
+
+```bash
+$ grep -E '^(Port|PermitRootLogin)' /etc/ssh/sshd_config
+Port 20022
+PermitRootLogin no
+
+$ ss -tulnp | grep sshd
+tcp  LISTEN  0  128  0.0.0.0:20022  0.0.0.0:*  users:(("sshd",pid=...))
+```
+
+##### 정리
+
+- SSH 포트를 22 → 20022로 변경하여 기본 포트 스캔 공격 감소
+- Root 직접 로그인 차단, 일반 계정 → `sudo` 경유 방식 적용
+
+#### UFW 방화벽 설정
+
+##### 실행 명령
+
+```bash
+# 기본 정책: 인바운드 차단, 아웃바운드 허용
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+
+# 허용 포트 설정
+sudo ufw allow 20022/tcp   # SSH
+sudo ufw allow 15034/tcp   # agent-app
+
+# 방화벽 활성화
+sudo ufw enable
+```
+
+##### 확인 결과
+
+```bash
+$ sudo ufw status verbose
+Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing), disabled (routed)
+New profiles: skip
+
+To                         Action      From
+--                         ------      ----
+20022/tcp                  ALLOW IN    Anywhere
+15034/tcp                  ALLOW IN    Anywhere
+20022/tcp (v6)             ALLOW IN    Anywhere (v6)
+15034/tcp (v6)             ALLOW IN    Anywhere (v6)
+```
+
+##### 정리
+
+- SSH(20022)와 앱(15034)만 인바운드 허용, 나머지 모든 포트 차단
+- IPv4 / IPv6 모두 동일 정책 적용
+
+### 2. 계정/그룹/권한 체계
+
+#### 그룹 생성
+
+```bash
+sudo groupadd agent-common   # 전체 계정 공통 그룹
+sudo groupadd agent-core     # 핵심 계정 전용 그룹
+```
+
+#### 계정 생성
+
+```bash
+sudo useradd -m -s /bin/bash agent-admin   # 운영 관리자
+sudo useradd -m -s /bin/bash agent-dev     # 개발자
+sudo useradd -m -s /bin/bash agent-test    # 테스터
 ```
 
 **useradd 주요 옵션**
 
 | 옵션 | 설명 |
 |------|------|
-| -d [디렉토리] | 사용자의 홈 디렉토리를 지정합니다. |
-| -m | 사용자의 홈 디렉토리를 자동으로 생성합니다 (보통 -d와 함께 사용). |
-| -s [쉘] | 로그인 쉘을 지정합니다 (예: /bin/bash). |
-| -g [그룹] | 사용자의 기본 그룹(GID)을 지정합니다. |
-| -G [그룹들] | 사용자가 속할 보조 그룹(들)을 지정합니다. |
-| -p [비밀번호] | 암호화된 비밀번호를 직접 지정하여 계정을 생성합니다. |
-| -e [YYYY-MM-DD] | 계정 만료일을 설정합니다. |
-| -r | 시스템 계정(System Account)을 생성합니다. |
-| -u [UID] | 사용자 ID(UID)를 직접 지정합니다. |
-| -D | 사용자를 추가할 때 사용하는 기본 설정값(/etc/default/useradd)을 보여줍니다. |
+| `-m` | 홈 디렉토리 자동 생성 |
+| `-s [쉘]` | 로그인 쉘 지정 (예: `/bin/bash`) |
+| `-g [그룹]` | 기본 그룹(GID) 지정 |
+| `-G [그룹들]` | 보조 그룹 지정 |
+| `-d [경로]` | 홈 디렉토리 경로 지정 |
+| `-r` | 시스템 계정 생성 |
+| `-D` | 기본 설정값(`/etc/default/useradd`) 확인 |
 
-3. 그룹 할당
+#### 그룹 할당
+
 ```bash
-    # agent-common: admin, dev, test
-    sudo usermod -aG agent-common agent-admin
-    sudo usermod -aG agent-common agent-dev
-    sudo usermod -aG agent-common agent-test
+# agent-common: admin, dev, test 전원
+sudo usermod -aG agent-common agent-admin
+sudo usermod -aG agent-common agent-dev
+sudo usermod -aG agent-common agent-test
 
-    # agent-core: admin, dev
-    sudo usermod -aG agent-core agent-admin
-    sudo usermod -aG agent-core agent-dev
+# agent-core: admin, dev만
+sudo usermod -aG agent-core agent-admin
+sudo usermod -aG agent-core agent-dev
 ```
-**확인**
-```bash
-    id agent-admin
-    id agent-dev
-    id agent-test
+
+##### 확인 결과
+
 ```
 agent-admin: groups=agent-common,agent-core
 agent-dev:   groups=agent-common,agent-core
 agent-test:  groups=agent-common
-
-4. 디렉토리 생성
-```bash
-    export AGENT_HOME=/home/agent-admin/agent-app #환경 변수 등록
-
-    sudo mkdir -p $AGENT_HOME/upload_files
-    sudo mkdir -p $AGENT_HOME/api_keys
-    sudo mkdir -p $AGENT_HOME/bin
-    sudo mkdir -p /var/log/agent-app
-```
-5. 권한 설정
-```bash
-    # AGENT_HOME 소유권
-    sudo chown agent-admin:agent-admin $AGENT_HOME
-
-    # upload_files: agent-common R/W
-    sudo chown agent-admin:agent-common $AGENT_HOME/upload_files
-    sudo chmod 770 $AGENT_HOME/upload_files
-
-    # api_keys: agent-core ONLY R/W
-    sudo chown agent-admin:agent-core $AGENT_HOME/api_keys
-    sudo chmod 770 $AGENT_HOME/api_keys
-
-    # /var/log/agent-app: agent-core ONLY R/W
-    sudo chown agent-admin:agent-core /var/log/agent-app
-    sudo chmod 770 /var/log/agent-app
-
-    # bin 디렉토리
-    sudo chown agent-dev:agent-core $AGENT_HOME/bin
-    sudo chmod 750 $AGENT_HOME/bin
-```
-**권한 확인**
-```bash
-    sudo su - [user-name]   # 사용자 전환
-    exit                    # logout
-
-    ls -la $AGENT_HOME/
-    ls -la /var/log/agent-app
-
-    > sudo ls -la $AGENT_HOME/
-
-    drwxrwx--- 2 agent-admin agent-core   4096 May 12 11:31 api_keys
-    drwxr-x--- 2 agent-dev   agent-core   4096 May 12 11:31 bin
-    drwxrwx--- 2 agent-admin agent-common 4096 May 12 11:31 upload_files
 ```
 
-## 애플리케이션 실행 환경 구성
+#### 디렉토리 구조 및 권한
 
-**환경 변수**
 ```bash
-    > sudo vi /etc/profile.d/agent-env.sh
-    > export AGENT_HOME=/home/agent-admin/agent-app
-    > export AGENT_PORT=15034
-    > export AGENT_UPLOAD_DIR=$AGENT_HOME/upload_files
-    > export AGENT_KEY_PATH=$AGENT_HOME/api_keys/t_secret.key
-    > export AGENT_LOG_DIR=/var/log/agent-app
+AGENT_HOME=/home/agent-admin/agent-app
 
+sudo mkdir -p $AGENT_HOME/upload_files
+sudo mkdir -p $AGENT_HOME/api_keys
+sudo mkdir -p $AGENT_HOME/bin
+sudo mkdir -p /var/log/agent-app
 ```
 
-**키 파일 생성**
+##### 권한 설정
+
 ```bash
-    echo "agent_api_key_test" | sudo tee $AGENT_HOME/api_keys/t_secret.key
+sudo chown agent-admin:agent-admin  $AGENT_HOME
+sudo chown agent-admin:agent-common $AGENT_HOME/upload_files && sudo chmod 770 $AGENT_HOME/upload_files
+sudo chown agent-admin:agent-core   $AGENT_HOME/api_keys     && sudo chmod 770 $AGENT_HOME/api_keys
+sudo chown agent-admin:agent-core   /var/log/agent-app        && sudo chmod 770 /var/log/agent-app
+sudo chown agent-dev:agent-core     $AGENT_HOME/bin           && sudo chmod 750 $AGENT_HOME/bin
 ```
 
-**앱 실행**
+##### 확인 결과
+
 ```bash
-    local> scp -P 20022 ~/Documents/developer/codyssey/basic/B1-1/agent-app B1-1@8.228.249.92:/tmp/
-    > ./agent-app &
-    > bash monitor.sh
+$ sudo ls -la $AGENT_HOME/
+drwxrwx--- 2 agent-admin agent-core   4096 May 12 11:31 api_keys
+drwxr-x--- 2 agent-dev   agent-core   4096 May 12 11:31 bin
+drwxrwx--- 2 agent-admin agent-common 4096 May 12 11:31 upload_files
 ```
 
-**monitor.sh**
+##### 정리 — 접근 권한 매트릭스
+
+| 디렉토리 | 소유자 | 그룹 | 권한 | admin | dev | test |
+|----------|--------|------|------|-------|-----|------|
+| `upload_files` | agent-admin | agent-common | 770 | R/W | R/W | R/W |
+| `api_keys` | agent-admin | agent-core | 770 | R/W | R/W | **X** |
+| `bin` | agent-dev | agent-core | 750 | R/X | R/X | **X** |
+| `/var/log/agent-app` | agent-admin | agent-core | 770 | R/W | R/W | **X** |
+
+### 3. 애플리케이션 실행 환경 구성
+
+#### 환경변수 등록
+
 ```bash
-    #!/usr/bin/env bash
-    set -u
-
-    source /etc/profile.d/agent-env.sh
-
-    APP_PATTERN="agent-app"
-    PORT="${AGENT_PORT:-15034}"
-    LOG_FILE="${AGENT_LOG_DIR:-/var/log/agent-app}/monitor.log"
-    MAX_SIZE=$((10 * 1024 * 1024)) #1,310,720
-    MAX_FILES=10
-
-    # 로그 로테이션: 10MB 초과 시 최대 10개 파일 유지
-    rotate_logs() {
-    if [ -f "$LOG_FILE" ] && [ "$(stat -c%s "$LOG_FILE")" -ge "$MAX_SIZE" ]; then
-        for i in $(seq $((MAX_FILES - 1)) -1 1); do
-        [ -f "${LOG_FILE}.${i}" ] && mv "${LOG_FILE}.${i}" "${LOG_FILE}.$((i + 1))"
-        done
-        mv "$LOG_FILE" "${LOG_FILE}.1"
-        : > "$LOG_FILE"
-    fi
-    }
-
-    get_cpu_usage() {
-    read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
-    total1=$((user + nice + system + idle + iowait + irq + softirq + steal))
-    idle1=$((idle + iowait))
-
-    sleep 1
-
-    read -r _ user nice system idle iowait irq softirq steal _ < /proc/stat
-    total2=$((user + nice + system + idle + iowait + irq + softirq + steal))
-    idle2=$((idle + iowait))
-
-    total_diff=$((total2 - total1))
-    idle_diff=$((idle2 - idle1))
-
-    awk -v total="$total_diff" -v idle="$idle_diff" 'BEGIN {
-        if (total == 0) print "0.0";
-        else printf "%.1f", (total - idle) * 100 / total
-    }'
-    }
-
-    get_mem_usage() {
-    free | awk '/Mem:/ { printf "%.1f", ($3 / $2) * 100 }'
-    }
-
-    get_disk_usage() {
-    df / | awk 'NR==2 { gsub("%", "", $5); print $5 }'
-    }
-
-    # === Health Check ===
-    echo "====== SYSTEM MONITOR RESULT ======"
-    echo
-    echo "[HEALTH CHECK]"
-
-    PID="$(pgrep -f "$APP_PATTERN" | head -n 1 || true)"
-    if [ -z "$PID" ]; then
-    echo "Checking process '$APP_PATTERN'... [FAIL]"
-    exit 1
-    fi
-    echo "Checking process '$APP_PATTERN'... [OK] (PID: $PID)"
-
-    if ! ss -ltn | awk '{print $4}' | grep -q ":${PORT}$"; then
-    echo "Checking port $PORT... [FAIL]"
-    exit 1
-    fi
-    echo "Checking port $PORT... [OK]"
-
-    # === Firewall Check ===
-    echo
-    echo "[FIREWALL CHECK]"
-    if command -v ufw >/dev/null 2>&1; then
-    if sudo ufw status 2>/dev/null | grep -q "Status: active"; then
-        echo "UFW status... [OK]"
-    else
-        echo "[WARNING] UFW is inactive"
-    fi
-    elif command -v firewall-cmd >/dev/null 2>&1; then
-    if firewall-cmd --state 2>/dev/null | grep -q "running"; then
-        echo "firewalld status... [OK]"
-    else
-        echo "[WARNING] firewalld is inactive"
-    fi
-    else
-    echo "[WARNING] No supported firewall command found"
-    fi
-
-    # === Resource Monitoring ===
-    CPU="$(get_cpu_usage)"
-    MEM="$(get_mem_usage)"
-    DISK_USED="$(get_disk_usage)"
-
-    echo
-    echo "[RESOURCE MONITORING]"
-    echo "CPU Usage : ${CPU}%"
-    echo "MEM Usage : ${MEM}%"
-    echo "DISK Used : ${DISK_USED}%"
-
-    # === Threshold Warnings ===
-    awk -v v="$CPU" 'BEGIN { if (v > 20) exit 0; exit 1 }' && echo "[WARNING] CPU threshold exceeded (${CPU}% > 20%)"
-    awk -v v="$MEM" 'BEGIN { if (v > 10) exit 0; exit 1 }' && echo "[WARNING] MEM threshold exceeded (${MEM}% > 10%)"
-    awk -v v="$DISK_USED" 'BEGIN { if (v > 80) exit 0; exit 1 }' && echo "[WARNING] DISK threshold exceeded (${DISK_USED}% > 80%)"
-
-    # === Log ===
-    rotate_logs
-
-    TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"
-    echo "[$TIMESTAMP] PID:${PID} CPU:${CPU}% MEM:${MEM}% DISK_USED:${DISK_USED}%" >> "$LOG_FILE"
-
-    echo
-    echo "[INFO] Log appended: $LOG_FILE"
+# /etc/profile.d/agent-env.sh (시스템 전역)
+export AGENT_HOME=/home/agent-admin/agent-app
+export AGENT_PORT=15034
+export AGENT_UPLOAD_DIR=$AGENT_HOME/upload_files
+export AGENT_KEY_PATH=$AGENT_HOME/api_keys/t_secret.key
+export AGENT_LOG_DIR=/var/log/agent-app
 ```
 
-#### Verification commands
+#### 키 파일 생성
+
 ```bash
-grep -E '(Port|PermitRootLogin)' /etc/ssh/sshd_config
-ss -tulnp | grep sshd"
-ufw status"
-id agent-admin && id agent-dev && id agent-test"
-ls -ld ${AGENT_HOME} ${AGENT_UPLOAD_DIR} ${AGENT_HOME}/api_keys ${AGENT_HOME}/bin ${AGENT_LOG_DIR}"
-sudo -u agent-admin bash -lc 'source /etc/profile.d/agent-env.sh && ${AGENT_HOME}/bin/agent-app'"
-sudo -u agent-admin bash -lc 'source /etc/profile.d/agent-env.sh && ${AGENT_HOME}/bin/monitor.sh'"
-sudo -u agent-admin crontab -l"
-tail -n 10 ${AGENT_LOG_DIR}/monitor.log"
+echo "agent_api_key_test" | sudo tee $AGENT_HOME/api_keys/t_secret.key
 ```
+
+#### 앱 배포 및 실행
+
+```bash
+# 로컬 → VM 전송
+scp -P 20022 agent-app agent-admin@<VM_IP>:/tmp/
+
+# VM에서 실행
+sudo cp /tmp/agent-app $AGENT_HOME/bin/
+sudo chmod +x $AGENT_HOME/bin/agent-app
+./agent-app &
+```
+
+### 4. 시스템 관제 자동화
+
+#### monitor.sh 주요 기능
+
+| 기능 | 설명 |
+|------|------|
+| Health Check | 프로세스 존재 여부(`pgrep`), 포트 리스닝 확인(`ss`) |
+| Firewall Check | UFW/firewalld 활성 상태 확인 |
+| Resource Monitoring | CPU(`/proc/stat` 기반), MEM(`free`), DISK(`df`) |
+| Process Resource | 프로세스별 CPU, MEM, RSS 수집 |
+| Deadlock Detection | 멀티스레드 전체 Sleeping + CPU 0% 감지 |
+| Threshold Warning | CPU > 20%, MEM > 10%, DISK > 80% 경고 |
+| Log Rotation | 10MB 초과 시 최대 10개 파일 순환 보관 |
+| Statistics Report | `report.sh` 호출하여 CPU/MEM/DISK 통계 출력 |
+
+#### 로그 포맷
+
+```
+[2026-05-17 14:00:05] PID:12345 CPU:2.3% MEM:5.1% DISK_USED:42% P_CPU:1.2% P_MEM:3.4% RSS:128MB
+```
+
+#### report.sh — 통계 리포트
+
+`monitor.log`를 파싱하여 CPU/MEM/DISK의 평균·최대·최소·시간대를 출력한다.
+
+```bash
+# 전체 기간 통계
+bash report.sh
+
+# 특정 구간 통계
+bash report.sh "2026-05-17 14:00:00" "2026-05-17 15:00:00"
+```
+
+```
+====== STATISTICS REPORT ======
+[CPU]
+Average : 3.2%
+Maximum : 15.1% at 2026-05-17 14:32:05
+Minimum : 0.5% at 2026-05-17 14:01:05
+[Memory]
+Average : 5.8%
+Maximum : 8.2% at 2026-05-17 14:45:05
+Minimum : 4.1% at 2026-05-17 14:00:05
+```
+
+#### cron 자동 실행
+
+```bash
+# agent-admin 사용자의 crontab에 등록
+* * * * * bash -lc 'source /etc/profile.d/agent-env.sh && /home/agent-admin/agent-app/bin/monitor.sh' >> /var/log/agent-app/monitor-cron.out 2>&1
+```
+
+- 매분 `monitor.sh` 실행 → `monitor.log`에 관제 데이터 자동 축적
+- `monitor-cron.out`에 cron 실행 자체의 stdout/stderr 기록 (디버깅용)
+
+### 5. 원커맨드 프로비저닝
+
+```bash
+# VM에 스크립트 전송 후 실행
+sudo bash setup.sh /tmp/agent-app
+```
+
+`setup.sh`가 아래 순서로 모든 설정을 자동 수행:
+
+```
+package_setup.sh → ssh_setup.sh → firewall_setup.sh
+→ group_setup.sh → account_setup.sh → permission_setup.sh
+→ env_setup.sh → app_setup.sh
+```
+
+## 검증 명령
+
+```bash
+# SSH 설정
+grep -E '^(Port|PermitRootLogin)' /etc/ssh/sshd_config
+ss -tulnp | grep sshd
+
+# 방화벽
+sudo ufw status verbose
+
+# 계정/그룹
+id agent-admin && id agent-dev && id agent-test
+
+# 디렉토리 권한
+ls -ld $AGENT_HOME $AGENT_UPLOAD_DIR $AGENT_HOME/api_keys $AGENT_HOME/bin $AGENT_LOG_DIR
+
+# 앱 실행
+sudo -u agent-admin bash -lc 'source /etc/profile.d/agent-env.sh && $AGENT_HOME/bin/agent-app'
+
+# 관제 스크립트
+sudo -u agent-admin bash -lc 'source /etc/profile.d/agent-env.sh && $AGENT_HOME/bin/monitor.sh'
+
+# cron 확인
+sudo -u agent-admin crontab -l
+
+# 로그 확인
+tail -n 10 $AGENT_LOG_DIR/monitor.log
+```
+
+## 체크리스트
+
+- [x] GCP Compute Engine Ubuntu 24.04 VM 생성
+- [x] SSH 포트 변경 (22 → 20022) 및 Root 로그인 차단
+- [x] UFW 방화벽 설정 (20022/tcp, 15034/tcp 허용)
+- [x] 그룹 생성 (agent-common, agent-core)
+- [x] 계정 생성 (agent-admin, agent-dev, agent-test)
+- [x] 디렉토리 구조 및 권한 설정
+- [x] 환경변수 등록 (`/etc/profile.d/agent-env.sh`)
+- [x] 키 파일 생성 (`t_secret.key`)
+- [x] `agent-app` 배포 및 실행
+- [x] `monitor.sh` — Health Check, Resource Monitoring, Log Rotation
+- [x] `report.sh` — 통계 리포트 (평균/최대/최소)
+- [x] cron 자동 실행 등록 (매분)
+- [x] `setup.sh` — 원커맨드 프로비저닝 스크립트
+
+---
 
 # 리눅스 프로세스 및 시스템 리소스 트러블슈팅
 
