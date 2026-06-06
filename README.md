@@ -36,9 +36,11 @@ B1-1/
 │   ├── env_setup.sh          # 환경변수 등록 (/etc/profile.d/agent-env.sh)
 │   ├── app_setup.sh          # 바이너리·스크립트 배포
 │   └── cron.sh               # cron 자동 등록
+├── app/
+│   ├── agent-app             # 실행 바이너리 (B1-1)
+│   └── agent-app-leak        # 실행 바이너리 (B1-2, 장애 시뮬레이션)
 ├── monitor.sh                # 시스템 관제 스크립트
 ├── report.sh                 # 통계 리포트 스크립트
-├── agent-app                 # 실행 바이너리
 └── B1-1.pdf                  # 미션 명세서
 ```
 
